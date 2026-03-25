@@ -56,13 +56,16 @@ services:
 
   # ─── Dashboard Next.js (B2B) ──────────────────
   - name: deggbi-dashboard
-    type: static
+    type: web
+    runtime: node
+    region: frankfurt
+    plan: starter
     buildCommand: cd frontend && npm ci && npm run build
-    staticPublishPath: frontend/out
+    startCommand: cd frontend && npm start
     envVars:
       - key: NEXT_PUBLIC_SUPABASE_URL
         sync: false
       - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
         sync: false
-      - key: NEXT_PUBLIC_API_URL
+      - key: BACKEND_URL
         sync: false
