@@ -9,6 +9,7 @@ from app.services.reporter import generate_report
 from app.core.scoring import compute_score_final, get_verdict
 from app.core.config import detect_content_type
 from app.models.analysis import ContentType
+from app.models.database import save_analysis
 import structlog
 import time
 import uuid
@@ -75,6 +76,24 @@ async def test_analyze_sync(
         deepshield=ds_result,
         analysis_time_ms=analysis_time_ms,
     )
+
+    # Sauvegarder en base Supabase
+    try:
+        await save_analysis({
+            "id": analysis_id,
+            "content_type": content_type.value,
+            "channel": "web",
+            "score_truthscan": ts_result.score,
+            "score_deepshield": ds_result.score,
+            "score_final": score_final,
+            "verdict": verdict.value,
+            "report_text": report,
+            "analysis_time_ms": analysis_time_ms,
+            "language": language,
+        })
+        logger.info("Analyse sauvegardée", id=analysis_id)
+    except Exception as e:
+        logger.warning("Sauvegarde échouée", error=str(e))
 
     return {
         "id": analysis_id,

@@ -91,7 +91,7 @@ export default function AnalyzePage() {
           Analyser un contenu
         </h1>
         <p className="text-[var(--muted)] text-sm mt-0.5">
-          Collez un message ou uploadez un fichier (image, audio) pour lancer l&apos;analyse
+          Collez un message ou uploadez un fichier (image, audio, vidéo) pour lancer l&apos;analyse
         </p>
       </div>
 
@@ -114,7 +114,7 @@ export default function AnalyzePage() {
         {/* File upload */}
         <div>
           <label className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider block mb-2">
-            Fichier (image ou audio)
+            Fichier (image, audio ou vidéo)
           </label>
           <div
             onDrop={handleFileDrop}
@@ -125,7 +125,7 @@ export default function AnalyzePage() {
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/*,audio/*"
+              accept="image/*,audio/*,video/*"
               onChange={(e) => setFile(e.target.files?.[0] || null)}
               className="hidden"
             />
@@ -142,7 +142,7 @@ export default function AnalyzePage() {
                   Glissez un fichier ici ou cliquez pour sélectionner
                 </p>
                 <p className="text-xs text-[var(--muted-light)]">
-                  JPG, PNG, MP3, OGG, WAV...
+                  JPG, PNG, MP3, WAV, MP4, MOV...
                 </p>
               </div>
             )}

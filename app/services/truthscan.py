@@ -1,11 +1,15 @@
 """
 TruthScan — Module de vérification des faits
 - Texte  : NLP multilingue + Fact-check API + détection arnaque
-- Image  : OCR (PaddleOCR) + reverse image search
+- Image  : OCR (TrOCR) + reverse image search
 - Audio  : Whisper STT → transcription → analyse NLP
+- Vidéo  : extraction audio (ffmpeg) → Whisper → NLP
 """
 import httpx
 import structlog
+import tempfile
+import subprocess
+import os
 from app.models.analysis import ContentType, ScoreTruthScan
 from app.config import settings
 
@@ -28,6 +32,8 @@ async def analyze_truthscan(
             return await _analyze_image(media_url, content, media_bytes)
         elif content_type == ContentType.AUDIO:
             return await _analyze_audio(media_url, media_bytes)
+        elif content_type == ContentType.VIDEO:
+            return await _analyze_video(media_url, media_bytes)
         else:
             return ScoreTruthScan(score=0, details="Type de contenu non supporté")
     except Exception as e:
@@ -133,6 +139,164 @@ async def _analyze_audio(media_url: str | None, media_bytes: bytes | None = None
         sources_found=text_result.sources_found,
         details=f"Whisper + {text_result.details}",
     )
+
+
+async def _analyze_video(media_url: str | None, media_bytes: bytes | None = None) -> ScoreTruthScan:
+    """Analyse une vidéo : extraction audio → Whisper → NLP."""
+    if not media_url and not media_bytes:
+        return ScoreTruthScan(score=50, details="Pas de vidéo disponible")
+
+    # Télécharger si URL
+    if not media_bytes and media_url:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(media_url)
+            media_bytes = resp.content
+    if not media_bytes:
+        return ScoreTruthScan(score=50, details="Pas de données vidéo")
+
+    # Extraire l'audio avec ffmpeg
+    audio_bytes = _extract_audio_from_video(media_bytes)
+    if not audio_bytes:
+        return ScoreTruthScan(score=30, details="Impossible d'extraire l'audio de la vidéo")
+
+    # Transcrire avec Whisper
+    transcription = await _whisper_transcribe(None, audio_bytes)
+    if not transcription:
+        return ScoreTruthScan(score=30, details="Vidéo sans parole détectée ou transcription échouée")
+
+    # Analyser le texte transcrit
+    text_result = await _analyze_text(transcription)
+
+    return ScoreTruthScan(
+        score=text_result.score,
+        transcription=transcription,
+        factcheck_score=text_result.factcheck_score,
+        sources_found=text_result.sources_found,
+        details=f"Extraction audio → Whisper → {text_result.details}",
+    )
+
+
+def _extract_audio_from_video(video_bytes: bytes) -> bytes | None:
+    """Extrait la piste audio d'une vidéo via ffmpeg → WAV mono 16kHz."""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_in:
+            tmp_in.write(video_bytes)
+            tmp_in_path = tmp_in.name
+
+        tmp_out_path = tmp_in_path.replace(".mp4", ".wav")
+
+        result = subprocess.run(
+            [
+                "ffmpeg", "-i", tmp_in_path,
+                "-vn",                    # pas de vidéo
+                "-acodec", "pcm_s16le",   # WAV 16-bit
+                "-ar", "16000",           # 16kHz pour Whisper
+                "-ac", "1",               # mono
+                "-y",                     # overwrite
+                tmp_out_path,
+            ],
+            capture_output=True,
+            timeout=60,
+        )
+
+        audio_bytes = None
+        if result.returncode == 0 and os.path.exists(tmp_out_path):
+            with open(tmp_out_path, "rb") as f:
+                audio_bytes = f.read()
+
+        # Nettoyage
+        for p in (tmp_in_path, tmp_out_path):
+            if os.path.exists(p):
+                os.unlink(p)
+
+        return audio_bytes
+    except Exception as e:
+        logger.warning("Extraction audio ffmpeg échouée", error=str(e))
+        return None
+
+
+def _extract_frames_from_video(video_bytes: bytes, count: int = 3) -> list[bytes]:
+    """Extrait N frames d'une vidéo via ffmpeg → JPEG."""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_in:
+            tmp_in.write(video_bytes)
+            tmp_in_path = tmp_in.name
+
+        tmp_dir = tempfile.mkdtemp()
+
+        # Extraire les frames uniformément réparties
+        subprocess.run(
+            [
+                "ffmpeg", "-i", tmp_in_path,
+                "-vf", f"select='not(mod(n\\,max(1\\,int(floor(t/({count}))))))' ",
+                "-vsync", "vfr",
+                "-frames:v", str(count),
+                "-q:v", "2",
+                "-y",
+                f"{tmp_dir}/frame_%03d.jpg",
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+
+        frames = []
+        for fname in sorted(os.listdir(tmp_dir)):
+            if fname.endswith(".jpg"):
+                fpath = os.path.join(tmp_dir, fname)
+                with open(fpath, "rb") as f:
+                    frames.append(f.read())
+                os.unlink(fpath)
+
+        # Nettoyage
+        os.unlink(tmp_in_path)
+        os.rmdir(tmp_dir)
+
+        # Fallback si la commande complexe n'a rien donné
+        if not frames:
+            return _extract_frames_simple(video_bytes, count)
+
+        return frames
+    except Exception as e:
+        logger.warning("Extraction frames ffmpeg échouée", error=str(e))
+        return _extract_frames_simple(video_bytes, count)
+
+
+def _extract_frames_simple(video_bytes: bytes, count: int = 3) -> list[bytes]:
+    """Fallback : extrait les N premières frames avec un filtre simple."""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_in:
+            tmp_in.write(video_bytes)
+            tmp_in_path = tmp_in.name
+
+        tmp_dir = tempfile.mkdtemp()
+
+        subprocess.run(
+            [
+                "ffmpeg", "-i", tmp_in_path,
+                "-vf", f"fps=1/{max(1, count)}",
+                "-frames:v", str(count),
+                "-q:v", "2",
+                "-y",
+                f"{tmp_dir}/frame_%03d.jpg",
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+
+        frames = []
+        for fname in sorted(os.listdir(tmp_dir)):
+            if fname.endswith(".jpg"):
+                fpath = os.path.join(tmp_dir, fname)
+                with open(fpath, "rb") as f:
+                    frames.append(f.read())
+                os.unlink(fpath)
+
+        os.unlink(tmp_in_path)
+        os.rmdir(tmp_dir)
+        return frames
+    except Exception as e:
+        logger.warning("Extraction frames fallback échouée", error=str(e))
+        return []
 
 
 # ─── Helpers ─────────────────────────────────────────

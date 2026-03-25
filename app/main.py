@@ -1,8 +1,11 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from app.logging_config import setup_logging
 from app.api import whatsapp, telegram, rest, test
 import traceback
+
+setup_logging()
 
 app = FastAPI(
     title="DeggBi AI",
