@@ -11,22 +11,23 @@ from app.config import settings
 
 logger = structlog.get_logger()
 
-HF_API_URL = "https://api-inference.huggingface.co/models"
+HF_API_URL = "https://router.huggingface.co/hf-inference/models"
 
 
 async def analyze_truthscan(
     content: str | None,
     media_url: str | None,
     content_type: ContentType,
+    media_bytes: bytes | None = None,
 ) -> ScoreTruthScan:
     """Point d'entrée principal TruthScan."""
     try:
         if content_type == ContentType.TEXT:
             return await _analyze_text(content or "")
         elif content_type == ContentType.IMAGE:
-            return await _analyze_image(media_url, content)
+            return await _analyze_image(media_url, content, media_bytes)
         elif content_type == ContentType.AUDIO:
-            return await _analyze_audio(media_url)
+            return await _analyze_audio(media_url, media_bytes)
         else:
             return ScoreTruthScan(score=0, details="Type de contenu non supporté")
     except Exception as e:
@@ -57,9 +58,21 @@ async def _analyze_text(text: str) -> ScoreTruthScan:
         scores.append(nlp_score)
         details.append("Classification NLP effectuée")
 
+    # 4. RAG — vérification contre la base de connaissances
+    sources = []
+    try:
+        from app.services.rag import rag_fact_check
+        rag_result = await rag_fact_check(text)
+        if rag_result["matched"]:
+            if rag_result["score"] is not None:
+                scores.append(rag_result["score"])
+            sources = rag_result["sources"]
+            details.append(rag_result["details"])
+    except Exception as e:
+        logger.warning("RAG indisponible", error=str(e))
+
     # Score final = max des scores (worst-case)
     final_score = max(scores) if scores else 30
-    sources = []  # TODO: extraire les sources du fact-check
 
     return ScoreTruthScan(
         score=round(final_score, 1),
@@ -69,14 +82,16 @@ async def _analyze_text(text: str) -> ScoreTruthScan:
     )
 
 
-async def _analyze_image(media_url: str | None, caption: str | None) -> ScoreTruthScan:
+async def _analyze_image(media_url: str | None, caption: str | None, media_bytes: bytes | None = None) -> ScoreTruthScan:
     """Analyse une image : OCR + vérification contexte."""
     details = []
     scores = [30]  # Score de base neutre
 
-    # 1. OCR si URL disponible
+    # 1. OCR si bytes ou URL disponible
     ocr_text = ""
-    if media_url:
+    if media_bytes:
+        ocr_text = await _run_ocr(None, media_bytes)
+    elif media_url:
         ocr_text = await _run_ocr(media_url)
         if ocr_text:
             details.append(f"OCR : {ocr_text[:50]}...")
@@ -97,13 +112,13 @@ async def _analyze_image(media_url: str | None, caption: str | None) -> ScoreTru
     )
 
 
-async def _analyze_audio(media_url: str | None) -> ScoreTruthScan:
+async def _analyze_audio(media_url: str | None, media_bytes: bytes | None = None) -> ScoreTruthScan:
     """Transcrit l'audio avec Whisper puis analyse le texte."""
-    if not media_url:
+    if not media_url and not media_bytes:
         return ScoreTruthScan(score=50, details="Pas d'audio disponible")
 
     # 1. Transcription Whisper via HuggingFace
-    transcription = await _whisper_transcribe(media_url)
+    transcription = await _whisper_transcribe(media_url, media_bytes)
 
     if not transcription:
         return ScoreTruthScan(score=50, details="Transcription échouée")
@@ -195,15 +210,17 @@ async def _huggingface_classify(text: str, task: str) -> float | None:
         return None
 
 
-async def _whisper_transcribe(audio_url: str) -> str:
+async def _whisper_transcribe(audio_url: str | None, audio_bytes: bytes | None = None) -> str:
     """Transcription audio via HuggingFace Whisper Large-v3."""
     if not settings.huggingface_api_key:
         return ""
     try:
-        # Télécharger l'audio d'abord
-        async with httpx.AsyncClient(timeout=30) as client:
-            audio_resp = await client.get(audio_url)
-            audio_bytes = audio_resp.content
+        if not audio_bytes and audio_url:
+            async with httpx.AsyncClient(timeout=30) as client:
+                audio_resp = await client.get(audio_url)
+                audio_bytes = audio_resp.content
+        if not audio_bytes:
+            return ""
 
         model = "openai/whisper-large-v3"
         url = f"{HF_API_URL}/{model}"
@@ -220,8 +237,34 @@ async def _whisper_transcribe(audio_url: str) -> str:
         return ""
 
 
-async def _run_ocr(image_url: str) -> str:
-    """OCR sur une image via PaddleOCR ou HuggingFace."""
-    # TODO: implémenter PaddleOCR local ou via API
-    # Pour le PoC : utiliser TrOCR sur HuggingFace
-    return ""
+async def _run_ocr(image_url: str | None, img_bytes: bytes | None = None) -> str:
+    """OCR sur une image via HuggingFace (microsoft/trocr-large-printed)."""
+    if not settings.huggingface_api_key:
+        return ""
+    try:
+        if not img_bytes and image_url:
+            async with httpx.AsyncClient(timeout=20) as client:
+                img_resp = await client.get(image_url)
+                img_resp.raise_for_status()
+                img_bytes = img_resp.content
+        if not img_bytes:
+            return ""
+
+        model = "microsoft/trocr-large-printed"
+        url = f"{HF_API_URL}/{model}"
+        headers = {
+            "Authorization": f"Bearer {settings.huggingface_api_key}",
+            "Content-Type": "image/jpeg",
+        }
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(url, content=img_bytes, headers=headers)
+            result = resp.json()
+
+        if isinstance(result, list) and result:
+            return result[0].get("generated_text", "")
+        if isinstance(result, dict):
+            return result.get("generated_text", "")
+        return ""
+    except Exception as e:
+        logger.warning("OCR HuggingFace indisponible", error=str(e))
+        return ""

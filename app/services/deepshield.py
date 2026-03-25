@@ -10,10 +10,10 @@ from app.config import settings
 
 logger = structlog.get_logger()
 
-HF_API_URL = "https://api-inference.huggingface.co/models"
+HF_API_URL = "https://router.huggingface.co/hf-inference/models"
 
 # Modèles HuggingFace utilisés
-MODEL_DEEPFAKE_IMAGE = "Wvolf/ViT-Deepfake-Detection"
+MODEL_DEEPFAKE_IMAGE = "umm-maybe/AI-image-detector"
 MODEL_DEEPFAKE_AUDIO = "mo-thecreator/deepfake-audio-detection"
 
 
@@ -21,16 +21,17 @@ async def analyze_deepshield(
     media_url: str | None,
     content_type: ContentType,
     mime_type: str | None = None,
+    media_bytes: bytes | None = None,
 ) -> ScoreDeepShield:
     """Point d'entrée principal DeepShield."""
-    if not media_url:
+    if not media_url and not media_bytes:
         return ScoreDeepShield(score=0, details="Pas de média à analyser")
 
     try:
         if content_type == ContentType.IMAGE:
-            return await _analyze_image_deepfake(media_url)
+            return await _analyze_image_deepfake(media_url, media_bytes)
         elif content_type == ContentType.AUDIO:
-            return await _analyze_audio_deepfake(media_url, mime_type)
+            return await _analyze_audio_deepfake(media_url, mime_type, media_bytes)
         else:
             return ScoreDeepShield(score=0, details="DeepShield non applicable pour ce type")
     except Exception as e:
@@ -38,13 +39,16 @@ async def analyze_deepshield(
         return ScoreDeepShield(score=0, details=f"Analyse partielle — {str(e)[:100]}")
 
 
-async def _analyze_image_deepfake(image_url: str) -> ScoreDeepShield:
+async def _analyze_image_deepfake(image_url: str | None, img_bytes: bytes | None = None) -> ScoreDeepShield:
     """Détection de deepfake image via HuggingFace."""
     try:
-        # Télécharger l'image
-        async with httpx.AsyncClient(timeout=15) as client:
-            img_resp = await client.get(image_url)
-            img_bytes = img_resp.content
+        # Télécharger l'image si pas de bytes directs
+        if not img_bytes and image_url:
+            async with httpx.AsyncClient(timeout=15) as client:
+                img_resp = await client.get(image_url)
+                img_bytes = img_resp.content
+        if not img_bytes:
+            return ScoreDeepShield(score=0, details="Pas de données image")
 
         headers = {"Authorization": f"Bearer {settings.huggingface_api_key}"}
         url = f"{HF_API_URL}/{MODEL_DEEPFAKE_IMAGE}"
@@ -61,7 +65,7 @@ async def _analyze_image_deepfake(image_url: str) -> ScoreDeepShield:
             for item in results:
                 label = item.get("label", "").upper()
                 score = item.get("score", 0)
-                if label in ("FAKE", "DEEPFAKE", "MANIPULATED", "LABEL_1"):
+                if label in ("FAKE", "DEEPFAKE", "MANIPULATED", "LABEL_1", "ARTIFICIAL"):
                     confidence = score * 100
                     deep_score = confidence
                     logger.info("Deepfake image détecté", score=deep_score)
@@ -80,13 +84,16 @@ async def _analyze_image_deepfake(image_url: str) -> ScoreDeepShield:
         return ScoreDeepShield(score=0, details=f"Modèle indisponible — {str(e)[:80]}")
 
 
-async def _analyze_audio_deepfake(audio_url: str, mime_type: str | None) -> ScoreDeepShield:
+async def _analyze_audio_deepfake(audio_url: str | None, mime_type: str | None, audio_bytes: bytes | None = None) -> ScoreDeepShield:
     """Détection de voix clonée/synthétique via HuggingFace."""
     try:
-        # Télécharger l'audio
-        async with httpx.AsyncClient(timeout=20) as client:
-            audio_resp = await client.get(audio_url)
-            audio_bytes = audio_resp.content
+        # Télécharger l'audio si pas de bytes directs
+        if not audio_bytes and audio_url:
+            async with httpx.AsyncClient(timeout=20) as client:
+                audio_resp = await client.get(audio_url)
+                audio_bytes = audio_resp.content
+        if not audio_bytes:
+            return ScoreDeepShield(score=0, details="Pas de données audio")
 
         headers = {"Authorization": f"Bearer {settings.huggingface_api_key}"}
         url = f"{HF_API_URL}/{MODEL_DEEPFAKE_AUDIO}"

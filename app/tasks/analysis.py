@@ -48,7 +48,8 @@ def run_analysis(
     import asyncio
     from app.services.truthscan import analyze_truthscan
     from app.services.deepshield import analyze_deepshield
-    from app.core.scoring import compute_score_final, get_verdict, build_report
+    from app.core.scoring import compute_score_final, get_verdict
+    from app.services.reporter import generate_report
     from app.models.analysis import (
         ContentType, Channel, Language,
         ScoreTruthScan, ScoreDeepShield
@@ -68,8 +69,10 @@ def run_analysis(
         # 1. Téléchargement média si nécessaire
         media_url = None
         if media_id and channel in ("whatsapp", "telegram"):
-            # TODO: implémenter download_whatsapp_media / download_telegram_media
-            pass
+            from app.utils.media import download_and_store
+            media_url = asyncio.run(
+                download_and_store(media_id, channel, analysis_id, mime_type)
+            )
         elif media_bytes:
             ext = (filename or "file").rsplit(".", 1)[-1] if filename else "bin"
             fname = f"{analysis_id}.{ext}"
@@ -98,7 +101,7 @@ def run_analysis(
         verdict = get_verdict(score_final, content_type)
         analysis_time_ms = int((time.time() - start_time) * 1000)
 
-        report = build_report(
+        report = generate_report(
             verdict=verdict,
             score_final=score_final,
             content_type=content_type,

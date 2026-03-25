@@ -30,9 +30,11 @@ class Settings(BaseSettings):
     # Google
     google_factcheck_key: str = ""
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
+    model_config = {
+        "env_file": ".env",
+        "case_sensitive": False,
+        "extra": "ignore",
+    }
 
 
 @lru_cache()

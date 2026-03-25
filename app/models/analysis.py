@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
 from enum import Enum
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 
@@ -67,7 +67,7 @@ class AnalysisResult(BaseModel):
     deepshield_details: Optional[ScoreDeepShield] = None
     report_text: str = ""
     analysis_time_ms: int = 0
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class AnalysisRequest(BaseModel):

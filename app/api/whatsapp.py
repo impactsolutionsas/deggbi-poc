@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Request, HTTPException, Query
 from app.config import settings
-from app.core.router import detect_content_type
+from app.core.config import detect_content_type
 from app.models.analysis import ContentType, Channel
 from app.tasks.analysis import run_analysis
 import structlog
@@ -89,22 +89,6 @@ async def receive_message(request: Request):
 
 
 async def send_whatsapp_text(to: str, message: str) -> dict:
-    """Envoie un message texte WhatsApp."""
-    import httpx
-
-    url = f"https://graph.facebook.com/v20.0/{settings.whatsapp_phone_id}/messages"
-    headers = {
-        "Authorization": f"Bearer {settings.whatsapp_token}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to,
-        "type": "text",
-        "text": {"body": message},
-    }
-
-    async with httpx.AsyncClient() as client:
-        response = await client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        return response.json()
+    """Envoie un message texte WhatsApp (délègue au client centralisé)."""
+    from app.utils.whatsapp_client import send_text
+    return await send_text(to, message)
