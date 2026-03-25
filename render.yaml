@@ -56,7 +56,7 @@ services:
 
   # ─── Dashboard Next.js (B2B) ──────────────────
   - name: deggbi-dashboard
-    type: static
+    type: web
     buildCommand: cd frontend && npm ci && npm run build
     staticPublishPath: frontend/out
     envVars:
